@@ -1,0 +1,10 @@
+config.py
+cache/
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.idea/
+.vscode/
+.DS_Store
+.claude/settings.local.json

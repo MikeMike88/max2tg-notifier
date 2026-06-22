@@ -1,0 +1,14 @@
+[Unit]
+Description=Notifier MAX -> Telegram
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/max2tg
+ExecStart=/usr/bin/python3 main.py --no-tray
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=default.target

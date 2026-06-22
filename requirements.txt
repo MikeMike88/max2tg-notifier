@@ -1,0 +1,10 @@
+# imported as `pymax`, distributed on PyPI as maxapi-python.
+# Версия запинена: pymax_patches.py накладывает фикс PR #66 на внутреннюю
+# структуру модели User. При обновлении PyMax проверь, что патч ещё применим.
+maxapi-python==2.3.0
+aiohttp>=3.13
+
+# Только для значка в системном трее (Windows-фон). На Linux/macOS запускают
+# с --no-tray, и эти пакеты не нужны.
+pystray>=0.19
+Pillow>=10
