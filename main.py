@@ -156,7 +156,7 @@ async def send_to_telegram(text: str) -> None:
         return
     url = f"https://api.telegram.org/bot{config.TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = {
-        "chat_id": config.TELEGRAM_CHAT_ID,
+        "chat_id": config.TELEGRAM_USER_ID,
         "text": text,
         "disable_web_page_preview": True,
     }

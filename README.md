@@ -40,8 +40,9 @@ python -m pip install "maxapi-python>=2.3.1" "aiohttp>=3.13"
    copy config.py.example config.py    # Windows
    ```
    В `config.py` укажи `MAX_PHONE` и `TELEGRAM_BOT_TOKEN`.
-3. Узнай `chat_id`: напиши боту любое сообщение, затем
-   `python get_telegram_chat_id.py` → впиши результат в `TELEGRAM_CHAT_ID`.
+3. Узнай свой числовой Telegram-ID (он же `chat_id` личного чата с ботом) и
+   впиши его в `TELEGRAM_USER_ID`. Проще всего: напиши `/start` боту
+   [@userinfobot](https://t.me/userinfobot), он пришлёт твой ID.
 
 `config.py` и папка `cache/` в `.gitignore` — твои секреты и сессия в
 репозиторий не попадают.
@@ -130,7 +131,6 @@ sudo systemctl enable --now max2tg
 
 - `main.py` — нотификатор (включает авторизацию при первом запуске).
 - `config.py.example` — шаблон настроек (копируется в `config.py`).
-- `get_telegram_chat_id.py` — помощник для chat_id.
 - `start_hidden.vbs` — фоновый запуск на Windows без мелькания окна (значок в трее).
 - `deploy/max2tg.service` — пример systemd-юнита для Linux.
 - `cache/` — сессия MAX и логи (**доступ к аккаунту, никому не показывай**).

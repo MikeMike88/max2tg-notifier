@@ -19,9 +19,9 @@ MAX_PHONE = "+70000000000"
 # Токен бота от @BotFather (/newbot -> скопировать токен).
 TELEGRAM_BOT_TOKEN = "PASTE_YOUR_BOT_TOKEN_HERE"
 
-# Твой chat_id. Узнать: написать боту любое сообщение, затем
-#   python get_telegram_chat_id.py
-TELEGRAM_CHAT_ID = "PASTE_YOUR_CHAT_ID_HERE"
+# Твой числовой Telegram-ID (он же chat_id личного чата с ботом). Узнать:
+# напиши /start боту @userinfobot — он пришлёт ID.
+TELEGRAM_USER_ID = "PASTE_YOUR_USER_ID_HERE"
 
 # --- Анти-спам ---
 # Не чаще одного пинга на один и тот же чат за столько секунд.
