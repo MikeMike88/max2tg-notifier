@@ -256,8 +256,38 @@ def _is_service_event(message) -> bool:
     return False
 
 
-async def build_ping_text(message, chat) -> str:
-    """Текст пинга: для группы/канала — её название, для личного диалога —
+# Подписи для медиа-сообщений без текста (когда включён INCLUDE_MESSAGE_TEXT).
+_ATTACH_LABELS = {
+    AttachmentType.PHOTO: "📷 Фото",
+    AttachmentType.VIDEO: "🎬 Видео",
+    AttachmentType.FILE: "📎 Файл",
+    AttachmentType.STICKER: "🩷 Стикер",
+    AttachmentType.AUDIO: "🎤 Голосовое сообщение",
+    AttachmentType.CONTACT: "👤 Контакт",
+    AttachmentType.CALL: "📞 Звонок",
+    AttachmentType.SHARE: "🔗 Ссылка",
+    AttachmentType.INLINE_KEYBOARD: "Сообщение с кнопками",
+}
+
+
+def _message_body(message) -> str:
+    """Тело сообщения для режима INCLUDE_MESSAGE_TEXT: сам текст (обрезанный до
+    MESSAGE_TEXT_LIMIT), а для медиа без текста — пометка вида «📷 Фото»."""
+    text = (getattr(message, "text", "") or "").strip()
+    if text:
+        limit = config.MESSAGE_TEXT_LIMIT
+        if limit and len(text) > limit:
+            text = text[:limit].rstrip() + "…"
+        return text
+    for a in getattr(message, "attaches", None) or []:
+        label = _ATTACH_LABELS.get(getattr(a, "type", None))
+        if label:
+            return label
+    return "[без текста]"
+
+
+async def _ping_header(message, chat) -> str:
+    """Заголовок сигнала: для группы/канала — её название, для личного диалога —
     имя собеседника (это message.sender, т.к. свои сообщения уже отфильтрованы).
     Боты в личке отображаются как обычный отправитель — по их имени."""
     chat_id = message.chat_id
@@ -283,6 +313,17 @@ async def build_ping_text(message, chat) -> str:
         if name:
             return f"🔔 Новое сообщение от «{name}»"
     return f"🔔 Новое сообщение в чате {chat_id}"
+
+
+async def build_ping_text(message, chat) -> str:
+    """Полный текст для Telegram: заголовок-сигнал, а при INCLUDE_MESSAGE_TEXT —
+    плюс сам текст сообщения (или пометка о медиа) следующей строкой."""
+    header = await _ping_header(message, chat)
+    if config.INCLUDE_MESSAGE_TEXT:
+        body = _message_body(message)
+        if body:
+            return f"{header}\n{body}"
+    return header
 
 
 def should_notify(chat_id, chat) -> bool:
@@ -328,7 +369,9 @@ async def handle(message: Message, client: Client) -> None:
         chat = get_chat(chat_id)
         if not should_notify(chat_id, chat):
             return
-        if not cooldown_ok(chat_id):
+        # В режиме с текстом сообщения шлём каждое; антиспам нужен только для
+        # «голых» сигналов, где десять сообщений подряд схлопываются в один пинг.
+        if not config.INCLUDE_MESSAGE_TEXT and not cooldown_ok(chat_id):
             return
 
         text = await build_ping_text(message, chat)
