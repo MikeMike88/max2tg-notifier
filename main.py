@@ -375,12 +375,48 @@ async def on_start(client: Client) -> None:
     log.info("MAX userbot запущен, слушаю входящие...")
 
 
+# Пауза перед попыткой переподключения после сетевого обрыва (секунды).
+RECONNECT_DELAY = 5.0
+
+
+async def _run_client_forever() -> None:
+    """Держит клиента живым, переподключаясь после сетевых обрывов.
+
+    У pymax есть встроенный reconnect, но на Windows он ломается: его же
+    очистка соединения повторно кидает ConnectionResetError мимо reconnect-
+    цикла и роняет start(). Поэтому страхуемся внешним циклом.
+    """
+    while True:
+        try:
+            await client.start()
+            return  # штатное завершение (отмена из трея / чистое закрытие)
+        except asyncio.CancelledError:
+            raise
+        except (ConnectionError, OSError, EOFError, TimeoutError) as e:
+            log.warning(
+                "Соединение с MAX потеряно (%s); переподключение через %s c",
+                e, RECONNECT_DELAY,
+            )
+        except Exception:  # noqa: BLE001
+            log.exception(
+                "Клиент MAX упал; переподключение через %s c", RECONNECT_DELAY
+            )
+        # start() мог упасть в своей же очистке: доводим close() до конца
+        # и пересобираем runtime перед повторным запуском.
+        try:
+            await client.close()
+        except Exception:  # noqa: BLE001
+            log.debug("Ошибка при закрытии клиента перед reconnect", exc_info=True)
+        client._reset_runtime()
+        await asyncio.sleep(RECONNECT_DELAY)
+
+
 async def main() -> None:
     global _http
     async with aiohttp.ClientSession() as session:
         _http = session
         await send_to_telegram("✅ Нотификатор MAX → Telegram запущен")
-        await client.start()
+        await _run_client_forever()
 
 
 # --- Системный трей ------------------------------------------------------
