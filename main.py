@@ -43,8 +43,20 @@ from pymax.types.domain.sync import DEFAULT_CONFIG_HASH
 
 import config
 
-if hasattr(sys.stdout, "reconfigure"):
-    sys.stdout.reconfigure(encoding="utf-8")
+# Логи и сообщения на русском. По умолчанию консоль Windows работает в cp866/
+# cp1251, и UTF-8-вывод превращается в кракозябры. Переводим саму консоль и оба
+# потока на UTF-8 (без консоли вызовы безвредны).
+if sys.platform == "win32":
+    try:
+        import ctypes
+
+        ctypes.windll.kernel32.SetConsoleOutputCP(65001)
+        ctypes.windll.kernel32.SetConsoleCP(65001)
+    except Exception:  # noqa: BLE001
+        pass
+for _stream in (sys.stdout, sys.stderr):
+    if hasattr(_stream, "reconfigure"):
+        _stream.reconfigure(encoding="utf-8")
 
 # Логи всегда пишем в файл (приложение фоновое, консоли может не быть —
 # при запуске через pythonw sys.stderr is None, и StreamHandler бы падал).
