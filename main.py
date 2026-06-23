@@ -42,11 +42,6 @@ from pymax.types.domain.attachments.enums import AttachmentType
 from pymax.types.domain.sync import DEFAULT_CONFIG_HASH
 
 import config
-import pymax_patches
-
-# Патчим установленный из PyPI PyMax (см. pymax_patches): сейчас — фикс парсинга
-# бот-профилей (PR #66). Делаем это до создания Client.
-pymax_patches.apply()
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
@@ -136,9 +131,8 @@ client = Client(
     work_dir="cache",
     session_name="main.db",
     # Встроенная авторизация: SMS-код и 2FA-пароль вводятся прямо в консоли при
-    # первом запуске (раньше для 2FA нужен был отдельный скрипт — password_provider
-    # не передавался, и вход на аккаунтах с 2FA не проходил). Делается один раз,
-    # дальше используется сохранённая в cache/main.db сессия.
+    # первом запуске. Делается один раз, дальше используется сохранённая в
+    # cache/main.db сессия.
     sms_code_provider=ConsoleSmsCodeProvider(),
     password_provider=ConsolePasswordProvider(),
     # Ничего не тянем списком целиком: имя чата/собеседника подтягиваем лениво
