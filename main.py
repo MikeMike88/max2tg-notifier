@@ -286,11 +286,6 @@ async def _ping_header(message, chat) -> str:
     Боты в личке отображаются как обычный отправитель — по их имени."""
     chat_id = message.chat_id
 
-    # Ручное имя из config.CHAT_NAMES имеет приоритет.
-    manual = config.CHAT_NAMES.get(chat_id)
-    if manual:
-        return f"🔔 Новое сообщение в «{manual}»"
-
     # Служебный чат MAX (если объект чата под рукой и помечен SERVICE_CHAT).
     if _is_service_chat(chat):
         return "🔔 Новое сообщение в «Служебный чат MAX»"

@@ -125,7 +125,6 @@ sudo systemctl enable --now max2tg
 - `RESPECT_MAX_MUTE` — учитывать заглушённые в MAX чаты (по умолчанию `True`).
 - `IGNORED_CHAT_IDS` — ручной игнор (страховка).
 - `WATCHED_CHAT_IDS` — если непусто, следим **только** за этими чатами.
-- `CHAT_NAMES` — человеческие названия для красивых сигналов.
 
 ## Файлы
 
