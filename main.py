@@ -162,15 +162,14 @@ _http: aiohttp.ClientSession | None = None
 # chat_id -> время последнего отправленного пинга (для антиспама)
 _last_ping: dict[int, float] = {}
 
-# --- Гарантированная доставка (outbox/inbox) -----------------------------
+# --- Гарантированная доставка (outbox) -----------------------------------
 # Сетевая отправка ненадёжна: в момент сообщения может не быть VPN/сети, а
 # приложение могут перезапустить. Поэтому НЕ шлём напрямую, а кладём каждое
 # уведомление файлом в cache/outbox/. Фоновый воркер (_outbox_worker) по
 # очереди (FIFO, по имени файла) дослывает их в Telegram: при успехе файл
-# переезжает в cache/inbox/ (архив), при неудаче остаётся в outbox и попытка
-# повторяется через RETRY_DELAY_SECONDS, удерживая порядок сообщений.
+# удаляется, при неудаче остаётся в outbox и попытка повторяется через
+# RETRY_DELAY_SECONDS, удерживая порядок сообщений.
 OUTBOX_DIR = os.path.join("cache", "outbox")
-INBOX_DIR = os.path.join("cache", "inbox")
 # Как часто заглядывать в пустой outbox (секунды).
 POLL_INTERVAL = 1.0
 # Порядковый номер в имени файла — чтобы два сообщения в одну миллисекунду
@@ -213,28 +212,12 @@ async def _try_send(text: str) -> tuple[bool, str]:
         return False, f"{type(e).__name__}: {e}"
 
 
-def _move_to_inbox(path: str) -> None:
-    """Переносит доставленный (или битый) файл из outbox в inbox-архив и
-    подчищает архив до config.INBOX_KEEP последних файлов."""
-    os.makedirs(INBOX_DIR, exist_ok=True)
-    dst = os.path.join(INBOX_DIR, os.path.basename(path))
+def _discard(path: str) -> None:
+    """Убирает обработанный файл из outbox (доставленный или битый)."""
     try:
-        os.replace(path, dst)
+        os.remove(path)
     except OSError:
-        try:
-            os.remove(path)
-        except OSError:
-            pass
-    keep = config.INBOX_KEEP
-    try:
-        names = sorted(os.listdir(INBOX_DIR))
-    except FileNotFoundError:
-        return
-    for n in names[: max(0, len(names) - keep)]:
-        try:
-            os.remove(os.path.join(INBOX_DIR, n))
-        except OSError:
-            pass
+        pass
 
 
 # Всплывающую подсказку (balloon tip) показываем через значок в трее — он не
@@ -289,7 +272,6 @@ async def _outbox_worker() -> None:
     """Фоновая гарантированная доставка: по одному файлу из outbox (FIFO),
     при неудаче — повтор того же файла после паузы, удерживая порядок."""
     os.makedirs(OUTBOX_DIR, exist_ok=True)
-    os.makedirs(INBOX_DIR, exist_ok=True)
     while True:
         try:
             names = sorted(
@@ -308,9 +290,9 @@ async def _outbox_worker() -> None:
             text = rec["text"]
             created = rec.get("created", 0)
         except Exception:  # noqa: BLE001
-            # Битый/чужой файл не должен навечно заклинить очередь — уносим в архив.
-            log.exception("Не удалось прочитать %s из outbox — убираю в inbox", names[0])
-            _move_to_inbox(path)
+            # Битый/чужой файл не должен навечно заклинить очередь — убираем.
+            log.exception("Не удалось прочитать %s из outbox — удаляю", names[0])
+            _discard(path)
             continue
 
         # Сообщение старше TTL — связи так и не появилось, перестаём пытаться:
@@ -325,15 +307,12 @@ async def _outbox_worker() -> None:
             _show_error_popup(
                 f"Связь так и не появилась за {hours} ч.", text, dropped=True
             )
-            try:
-                os.remove(path)
-            except OSError:
-                pass
+            _discard(path)
             continue
 
         ok, err = await _try_send(text)
         if ok:
-            _move_to_inbox(path)
+            _discard(path)
             log.info("→ TG | доставлено: %s", text.replace("\n", " ⏎ "))
         else:
             log.error(
