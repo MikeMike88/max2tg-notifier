@@ -6,6 +6,8 @@
 """
 
 import asyncio
+import ctypes
+import json
 import logging
 import os
 import subprocess
@@ -48,8 +50,6 @@ import config
 # потока на UTF-8 (без консоли вызовы безвредны).
 if sys.platform == "win32":
     try:
-        import ctypes
-
         ctypes.windll.kernel32.SetConsoleOutputCP(65001)
         ctypes.windll.kernel32.SetConsoleCP(65001)
     except Exception:  # noqa: BLE001
@@ -162,10 +162,40 @@ _http: aiohttp.ClientSession | None = None
 # chat_id -> время последнего отправленного пинга (для антиспама)
 _last_ping: dict[int, float] = {}
 
+# --- Гарантированная доставка (outbox/inbox) -----------------------------
+# Сетевая отправка ненадёжна: в момент сообщения может не быть VPN/сети, а
+# приложение могут перезапустить. Поэтому НЕ шлём напрямую, а кладём каждое
+# уведомление файлом в cache/outbox/. Фоновый воркер (_outbox_worker) по
+# очереди (FIFO, по имени файла) дослывает их в Telegram: при успехе файл
+# переезжает в cache/inbox/ (архив), при неудаче остаётся в outbox и попытка
+# повторяется через RETRY_DELAY_SECONDS, удерживая порядок сообщений.
+OUTBOX_DIR = os.path.join("cache", "outbox")
+INBOX_DIR = os.path.join("cache", "inbox")
+# Как часто заглядывать в пустой outbox (секунды).
+POLL_INTERVAL = 1.0
+# Порядковый номер в имени файла — чтобы два сообщения в одну миллисекунду
+# не затёрли друг друга и сохранили порядок постановки в очередь.
+_enqueue_seq = 0
 
-async def send_to_telegram(text: str) -> None:
+
+def enqueue(text: str) -> None:
+    """Кладёт уведомление в outbox (атомарно). Возвращается сразу — реальную
+    отправку делает _outbox_worker в фоне с гарантией доставки."""
+    global _enqueue_seq
+    os.makedirs(OUTBOX_DIR, exist_ok=True)
+    _enqueue_seq += 1
+    name = f"{int(time.time() * 1000):013d}_{_enqueue_seq:04d}.json"
+    path = os.path.join(OUTBOX_DIR, name)
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump({"created": time.time(), "text": text}, f, ensure_ascii=False)
+    os.replace(tmp, path)  # атомарная публикация: воркер не увидит полупустой файл
+
+
+async def _try_send(text: str) -> tuple[bool, str]:
+    """Одна попытка отправки в Telegram. Возвращает (успех, текст_ошибки)."""
     if _http is None:
-        return
+        return False, "HTTP-сессия ещё не готова"
     url = f"https://api.telegram.org/bot{config.TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = {
         "chat_id": config.TELEGRAM_USER_ID,
@@ -176,10 +206,142 @@ async def send_to_telegram(text: str) -> None:
         async with _http.post(
             url, json=payload, timeout=aiohttp.ClientTimeout(total=20)
         ) as resp:
-            if resp.status != 200:
-                log.error("Telegram вернул %s: %s", resp.status, await resp.text())
+            if resp.status == 200:
+                return True, ""
+            return False, f"Telegram вернул HTTP {resp.status}: {await resp.text()}"
     except Exception as e:  # noqa: BLE001
-        log.error("Не удалось отправить в Telegram: %s", e)
+        return False, f"{type(e).__name__}: {e}"
+
+
+def _move_to_inbox(path: str) -> None:
+    """Переносит доставленный (или битый) файл из outbox в inbox-архив и
+    подчищает архив до config.INBOX_KEEP последних файлов."""
+    os.makedirs(INBOX_DIR, exist_ok=True)
+    dst = os.path.join(INBOX_DIR, os.path.basename(path))
+    try:
+        os.replace(path, dst)
+    except OSError:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+    keep = config.INBOX_KEEP
+    try:
+        names = sorted(os.listdir(INBOX_DIR))
+    except FileNotFoundError:
+        return
+    for n in names[: max(0, len(names) - keep)]:
+        try:
+            os.remove(os.path.join(INBOX_DIR, n))
+        except OSError:
+            pass
+
+
+# Всплывающую подсказку (balloon tip) показываем через значок в трее — он не
+# блокирует экран и не перетягивает фокус, в отличие от модального окна.
+# Ссылку на значок проставляет run_with_tray(); до этого (headless / первый
+# запуск в консоли) её нет — тогда пишем в лог.
+_tray_icon = None
+# Защита от спама: при долгом простое сети воркер повторяет попытку каждые
+# RETRY_DELAY_SECONDS, и без троттлинга центр уведомлений Windows завалило бы
+# одинаковыми подсказками. Обычные сбои — не чаще раза в этот интервал;
+# отбрасывание по TTL (редкое и важное) показываем всегда.
+POPUP_MIN_INTERVAL = 60.0
+_last_popup = 0.0
+# balloon Windows ограничен по длине; обрезаем текст сообщения для подсказки.
+_POPUP_TEXT_LIMIT = 180
+
+
+def _show_error_popup(error: str, text: str, dropped: bool = False) -> None:
+    """Balloon-подсказка из трея: что не ушло и почему. Не блокирует экран.
+    dropped=True — сообщение окончательно отброшено по истечении TTL.
+    Если значка в трее нет (headless) — пишем в лог."""
+    if not config.ERROR_POPUP:
+        return
+    global _last_popup
+    if not dropped:
+        now = time.monotonic()
+        if now - _last_popup < POPUP_MIN_INTERVAL:
+            return
+        _last_popup = now
+
+    snippet = " ".join(text.split())  # схлопываем переводы строк для подсказки
+    if len(snippet) > _POPUP_TEXT_LIMIT:
+        snippet = snippet[:_POPUP_TEXT_LIMIT].rstrip() + "…"
+    if dropped:
+        title = "MAX → Telegram: сообщение отброшено"
+        body = f"Не доставлено за сутки, отброшено.\n{snippet}"
+    else:
+        title = "MAX → Telegram: нет связи"
+        body = f"Не удалось отправить, дошлю позже.\n{error}\n\n{snippet}"
+
+    icon = _tray_icon
+    if icon is not None:
+        try:
+            icon.notify(body, title)
+            return
+        except Exception:  # noqa: BLE001
+            log.exception("Не удалось показать balloon-подсказку")
+    log.error("%s | %s", title, body.replace("\n", " "))
+
+
+async def _outbox_worker() -> None:
+    """Фоновая гарантированная доставка: по одному файлу из outbox (FIFO),
+    при неудаче — повтор того же файла после паузы, удерживая порядок."""
+    os.makedirs(OUTBOX_DIR, exist_ok=True)
+    os.makedirs(INBOX_DIR, exist_ok=True)
+    while True:
+        try:
+            names = sorted(
+                n for n in os.listdir(OUTBOX_DIR) if n.endswith(".json")
+            )
+        except FileNotFoundError:
+            names = []
+        if not names:
+            await asyncio.sleep(POLL_INTERVAL)
+            continue
+
+        path = os.path.join(OUTBOX_DIR, names[0])
+        try:
+            with open(path, encoding="utf-8") as f:
+                rec = json.load(f)
+            text = rec["text"]
+            created = rec.get("created", 0)
+        except Exception:  # noqa: BLE001
+            # Битый/чужой файл не должен навечно заклинить очередь — уносим в архив.
+            log.exception("Не удалось прочитать %s из outbox — убираю в inbox", names[0])
+            _move_to_inbox(path)
+            continue
+
+        # Сообщение старше TTL — связи так и не появилось, перестаём пытаться:
+        # отбрасываем (иначе протухшее держало бы за собой всю очередь).
+        ttl = config.MESSAGE_TTL_SECONDS
+        if ttl and time.time() - created > ttl:
+            hours = round(ttl / 3600, 1)
+            log.warning(
+                "Сообщение не доставлено за %s ч — отброшено: %s",
+                hours, text.replace("\n", " ⏎ "),
+            )
+            _show_error_popup(
+                f"Связь так и не появилась за {hours} ч.", text, dropped=True
+            )
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+            continue
+
+        ok, err = await _try_send(text)
+        if ok:
+            _move_to_inbox(path)
+            log.info("→ TG | доставлено: %s", text.replace("\n", " ⏎ "))
+        else:
+            log.error(
+                "Не удалось доставить (%s); повтор через %s c",
+                err, config.RETRY_DELAY_SECONDS,
+            )
+            _show_error_popup(err, text)
+            await asyncio.sleep(config.RETRY_DELAY_SECONDS)
 
 
 def get_chat(chat_id):
@@ -376,8 +538,8 @@ async def handle(message: Message, client: Client) -> None:
             return
 
         text = await build_ping_text(message, chat)
-        await send_to_telegram(text)
-        log.info("→ TG | пинг по чату %s | %s", chat_id, text)
+        enqueue(text)
+        log.info("→ outbox | пинг по чату %s | %s", chat_id, text)
     except Exception:  # noqa: BLE001
         log.exception("Ошибка при обработке сообщения")
 
@@ -427,8 +589,16 @@ async def main() -> None:
     global _http
     async with aiohttp.ClientSession() as session:
         _http = session
-        await send_to_telegram("✅ Нотификатор MAX → Telegram запущен")
-        await _run_client_forever()
+        enqueue("✅ Нотификатор MAX → Telegram запущен")
+        worker = asyncio.create_task(_outbox_worker())
+        try:
+            await _run_client_forever()
+        finally:
+            worker.cancel()
+            try:
+                await worker
+            except asyncio.CancelledError:
+                pass
 
 
 # --- Системный трей ------------------------------------------------------
@@ -509,6 +679,8 @@ def run_with_tray() -> None:
         "Нотификатор MAX → Telegram",
         menu,
     )
+    global _tray_icon
+    _tray_icon = icon  # чтобы _show_error_popup мог показать balloon-подсказку
     icon.run()
     worker.join(timeout=10)
 
